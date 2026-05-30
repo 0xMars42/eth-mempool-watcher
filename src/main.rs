@@ -238,7 +238,7 @@ async fn main() -> Result<()> {
                             hash = %hash,
                             block = block_number,
                             verdict = "MINED_SUCCESS",
-                            "🔍 VALIDATED"
+                            "VALIDATED"
                         ),
                         ValidationOutcome::MinedReverted { block_number } => info!(
                             kind = ?entry.kind,
@@ -246,14 +246,14 @@ async fn main() -> Result<()> {
                             block = block_number,
                             verdict = "MINED_REVERTED",
                             note = "bot a paye le gas pour rien, probable race MEV perdue",
-                            "🔍 VALIDATED"
+                            "VALIDATED"
                         ),
                         ValidationOutcome::NotMined => info!(
                             kind = ?entry.kind,
                             hash = %hash,
                             verdict = "NOT_MINED",
                             note = "tx droppee du mempool",
-                            "🔍 VALIDATED"
+                            "VALIDATED"
                         ),
                     }
                 }
@@ -335,7 +335,7 @@ fn log_detection(det: &Detection) {
             token_out = %token_out,
             n_swaps,
             sample_hashes = ?sample_hashes,
-            "🎯 PATTERN detected"
+            "PATTERN detected"
         ),
         Detection::BotRepetition {
             from,
@@ -346,7 +346,7 @@ fn log_detection(det: &Detection) {
             from = %from,
             n_swaps,
             sample_hashes = ?sample_hashes,
-            "🎯 PATTERN detected"
+            "PATTERN detected"
         ),
         Detection::LargeWethSwap {
             from,
@@ -364,7 +364,7 @@ fn log_detection(det: &Detection) {
                 token_out = %token_out,
                 amount_eth,
                 hash = %hash,
-                "🎯 PATTERN detected"
+                "PATTERN detected"
             );
         }
     }

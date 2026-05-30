@@ -68,7 +68,7 @@ sol! {
 // avoir les bons selectors on aurait du nommer les 3 variantes "exactInputSingle"
 // / "exactOutputSingle" en Solidity. Mais ici elles ont des signatures
 // DIFFERENTES (params struct different) donc selector different aussi.
-// → on les nomme avec suffixe V1/V2 et on hardcode les selectors attendus
+// -> on les nomme avec suffixe V1/V2 et on hardcode les selectors attendus
 //   dans le match plutot que de s'appuyer sur la const generee.
 
 // Selectors hardcodes (canoniques sur Ethereum mainnet).
