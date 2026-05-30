@@ -24,44 +24,88 @@ On every new pending transaction (received via WebSocket, no polling, no API key
 3. **Feeds** the decoded swap into a rolling-window detector that emits
    three kinds of pattern alerts.
 
-All logic that doesn't depend on the network is **pure and tested** — 10 unit
-tests covering routers, decoder edge cases, and detector behavior.
+All logic that doesn't depend on the network is **pure and tested** — 14 unit
+tests covering routers, decoder edge cases, and detector behavior (including
+the post-live-run fixes documented below).
 
-## Demo (real output, Ethereum mainnet)
+## Live capture (Ethereum mainnet, 2026-05-30 morning)
 
-A live WETH-out swap, fully decoded :
+A short ~15-minute run on `wss://ethereum-rpc.publicnode.com` produced this :
+
+```
+total pending tx scanned   17 748
+DEX router hits               137  (0.8 % hit rate)
+distribution                  V2=67, UR=56, V3=9, 1inch=5
+patterns detected               5  ← the interesting bit
+```
+
+### The 5 patterns
+
+**1. SniperCluster** — 2 distinct addresses racing for the same fresh memecoin :
+
+```text
+INFO 🎯 PATTERN detected kind="SniperCluster"
+     token_out=0x42bBFa2e77757C645eeaAd1655E0911a7553Efbc
+     n_swaps=3
+     # cumul on this token over the window:
+     #   3× from 0xb1b2d032AA...   (same wallet retrying)
+     #   2× from 0x72283052cD...   (competing wallet)
+```
+
+**2–5. BotRepetition burst** — 4 distinct bots fired 2 swaps each, all within
+**281 milliseconds** at 09:35:14, indicating a coordinated reaction to a
+market event (likely a fresh token deployment) :
+
+```text
+09:35:14.438  PATTERN detected kind="BotRepetition" from=0x8ca0A5d1...
+09:35:14.570  PATTERN detected kind="BotRepetition" from=0xB8a52FfF...
+09:35:14.645  PATTERN detected kind="BotRepetition" from=0x0dCfbEf3...
+09:35:14.719  PATTERN detected kind="BotRepetition" from=0x086bc4c2...
+```
+
+This is the signature MEV pattern the detector was designed to surface :
+multiple automated wallets reacting to the same on-chain event in real time.
+
+### The fix loop that got us here
+
+The same run, on a previous build, surfaced **2 false-positive SniperClusters
+on `token_out = WETH`** — because every wallet selling its memecoin for WETH
+counted toward the cluster. WETH is a quote currency, not a sniper target.
+
+Fix committed as [`94dd057`](https://github.com/0xMars42/eth-mempool-watcher/commit/94dd057) :
+
+1. Added `QUOTE_TOKENS = [WETH, USDC, USDT, DAI]` and excluded them from
+   `SniperCluster.token_out`.
+2. Refactored `Observation.swap` to `Option<SwapDetails>` so Universal Router
+   envelopes (where token info isn't decoded yet) can still feed
+   `BotRepetition` (which only needs `from`).
+
+Result on the next run : 0 false positives on quote tokens, and the
+4-bot burst above became visible because `BotRepetition` now sees UR traffic.
+
+### Other decoded outputs
+
+A V2 path swap, fully decoded :
 
 ```text
 INFO DEX swap decoded
      router="Uniswap V2 Router02"
-     label="UniV2 ExactInputPath 0x6bf9c5b2...->0xc02aaa39... (2 hops)"
-     token_in=0x6bf9c5B26a30EB0cA650cC510694428A90e78568
-     token_out=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2   # WETH
-     amount_in=5240391466106653607920600                    # 5.24M tokens
-     amount_out_min=0                                       # any
-     from=0x654706C44Deb6b21b04DE87B2cE440c13868eCe0
-     max_fee_gwei="0.31"
+     label="UniV2 ExactInputPath 0xc02aaa39...->0x42bbfa2e77... (2 hops)"
+     token_in=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2   # WETH
+     token_out=0x42bBFa2e77757C645eeaAd1655E0911a7553Efbc  # memecoin
+     amount_in=300000000000000000                          # 0.3 WETH
+     from=0xb1b2d032AA2F52347fbcfd08E5C3Cc55216E8404
+     max_fee_gwei="0.34"
 ```
 
-A Universal Router envelope (~80% of DEX traffic in the public mempool) :
+A Universal Router envelope (~80 % of DEX flow in the public mempool — the
+per-command decode is Phase C.2) :
 
 ```text
 INFO UR envelope
      router="Uniswap Universal Router"
      label="UniversalRouter execute (1 cmds, 1 inputs)"
      n_commands=1 n_inputs=1
-     from=0x8ca0A5d199f81775fc19da348828f2DC872eaB44   # recurrent bot
-     max_fee_gwei="0.48"
-```
-
-And when the rolling-window heuristics fire :
-
-```text
-INFO 🎯 PATTERN detected
-     kind="SniperCluster"
-     token_out=0x7c58FfF82C0a921DC9195b0345CEe5076522a77B   # memecoin
-     n_swaps=3
-     sample_hashes=[0x...d21bee5, 0x...8fd8b6c, 0x...c2f7f3]
 ```
 
 ## Architecture
@@ -76,7 +120,7 @@ src/
 │   ├── uniswap_v2.rs          # 6 V2 selectors (incl. fee-on-transfer)
 │   ├── uniswap_v3.rs          # V3 single/multi + multicall envelope
 │   └── universal_router.rs    # UR execute() with/without deadline
-└── detect.rs                  # rolling-window detector (7 tests)
+└── detect.rs                  # rolling-window detector (11 tests)
 ```
 
 Design choices:
@@ -145,8 +189,9 @@ if you want a dedicated provider.
 
 - `cargo fmt --check` clean
 - `cargo clippy --all-targets -- -D warnings` clean (zero warnings)
-- **10 unit tests** covering router lookup, decoder mapping, and detector
-  heuristics
+- **14 unit tests** covering router lookup, decoder mapping, detector
+  heuristics, and the post-live-run regression cases (quote-token exclusion +
+  envelope-only observations)
 
 ```bash
 cargo fmt --check
@@ -164,6 +209,7 @@ cargo test
 | C.1 | ✅ | Extra selectors — V2 fee-on-transfer (3), V3 exactOut + V1, V3 multicall |
 | E | ✅ | MEV pattern detection (SniperCluster, BotRepetition, LargeWethSwap) |
 | G | ✅ | CI + LICENSE + README polish + public push |
+| E.1 | ✅ | Post-live-run fixes : quote-token exclusion + envelope-only obs |
 | C.2 | 📋 | UR per-command decode + V3 packed-path swaps (the big unlock) |
 | D | 📋 | Quoter-based price impact simulation |
 | F | 📋 | Periodic stats summary + end-of-run report |
