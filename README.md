@@ -108,6 +108,45 @@ INFO UR envelope
      n_commands=1 n_inputs=1
 ```
 
+## Post-block validation (Phase H)
+
+Detection alone only produces *candidates* — a pending tx looks like a snipe,
+but did it actually land, and did it work? Phase H closes that loop: each
+detected pattern is tracked with its block number, and 3 blocks later the
+binary calls `eth_getTransactionReceipt` on every hash and classifies the
+outcome — fully automatic, no manual Etherscan lookups.
+
+```text
+INFO PATTERN detected   kind="BotRepetition" from=0xA3Db7d63...
+                        hashes=[0xdfa3f6bd..., 0x851f0956...]
+   ... 3 blocks later ...
+INFO VALIDATED  hash=0xdfa3f6bd...  block=25207711  verdict="MINED_REVERTED"
+                note="bot paid gas for nothing, likely lost a MEV race"
+INFO VALIDATED  hash=0x851f0956...  block=25207711  verdict="MINED_SUCCESS"
+```
+
+This turns the tool from an *alert* into a *research* instrument. Validating
+8 of the morning's detected hashes against the chain gave:
+
+```
+6 MINED_REVERTED   (bots lost the race, gas burned)
+2 MINED_SUCCESS
+0 NOT_MINED
+```
+
+The behavioral split is the interesting part: the most aggressive sniper
+`0xb1b2d032AA` reverted on **3/3** of its tracked attempts (tight slippage,
+rushing too hard), while the more conservative `0x8ca0A5d1` succeeded on
+**2/2**. One of these verdicts (`0x594dedc7` → `MINED_REVERTED`,
+block 25207463) was cross-checked manually on Etherscan and matched exactly
+("Fail with error 'Too much requested'").
+
+Reproduce on the morning's hashes:
+
+```bash
+cargo run --example validate_known
+```
+
 ## Architecture
 
 ```
@@ -120,7 +159,9 @@ src/
 │   ├── uniswap_v2.rs          # 6 V2 selectors (incl. fee-on-transfer)
 │   ├── uniswap_v3.rs          # V3 single/multi + multicall envelope
 │   └── universal_router.rs    # UR execute() with/without deadline
-└── detect.rs                  # rolling-window detector (11 tests)
+├── detect.rs                  # rolling-window detector (11 tests)
+├── track.rs                   # post-block tracking buffer (6 tests)
+└── validate.rs                # eth_getTransactionReceipt classifier (2 tests)
 ```
 
 Design choices:
@@ -189,9 +230,9 @@ if you want a dedicated provider.
 
 - `cargo fmt --check` clean
 - `cargo clippy --all-targets -- -D warnings` clean (zero warnings)
-- **14 unit tests** covering router lookup, decoder mapping, detector
-  heuristics, and the post-live-run regression cases (quote-token exclusion +
-  envelope-only observations)
+- **22 unit tests** covering router lookup, decoder mapping, detector
+  heuristics (incl. quote-token exclusion + envelope-only observations),
+  the post-block tracking buffer, and the receipt classifier
 
 ```bash
 cargo fmt --check
@@ -208,10 +249,13 @@ cargo test
 | C | ✅ | Decode swap calldata — Uni V2 (3 selectors), Uni V3 (single), UR envelope |
 | C.1 | ✅ | Extra selectors — V2 fee-on-transfer (3), V3 exactOut + V1, V3 multicall |
 | E | ✅ | MEV pattern detection (SniperCluster, BotRepetition, LargeWethSwap) |
-| G | ✅ | CI + LICENSE + README polish + public push |
 | E.1 | ✅ | Post-live-run fixes : quote-token exclusion + envelope-only obs |
+| G | ✅ | CI + LICENSE + README polish + public push |
+| H.1 | ✅ | Post-block tracking buffer (track detected hashes + block) |
+| H.2 | ✅ | `eth_getTransactionReceipt` validation (mined/reverted/dropped) |
 | C.2 | 📋 | UR per-command decode + V3 packed-path swaps (the big unlock) |
 | D | 📋 | Quoter-based price impact simulation |
+| H.3 | 📋 | Parse `Transfer` logs of the inclusion block for realized profit |
 | F | 📋 | Periodic stats summary + end-of-run report |
 
 ## License
