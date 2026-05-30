@@ -14,6 +14,7 @@ use eth_mempool_watcher::decode::{DecodedSwap, decode as decode_swap};
 use eth_mempool_watcher::detect::{Detection, Detector, Observation, SwapDetails};
 use eth_mempool_watcher::routers::{Router, lookup};
 use eth_mempool_watcher::track::{PendingTracker, TrackedKind};
+use eth_mempool_watcher::validate::{ValidationOutcome, validate_hashes};
 use eyre::Result;
 use futures_util::StreamExt;
 use std::collections::HashMap;
@@ -52,6 +53,8 @@ async fn main() -> Result<()> {
     // Phase H.1 : tracker des patterns en attente de validation post-block.
     let mut tracker = PendingTracker::new();
     let mut last_drain = Instant::now();
+    // Phase H.2 : compteurs cumules par (kind × outcome).
+    let mut validated_counts: HashMap<(TrackedKind, &'static str), u64> = HashMap::new();
 
     while let Some(tx) = stream.next().await {
         total += 1;
@@ -218,17 +221,42 @@ async fn main() -> Result<()> {
             last_log = Instant::now();
         }
 
-        // Phase H.1 : drainer les patterns prets toutes les 30s. En H.1 on
-        // les jette juste avec un log placeholder — H.2 fera l'appel RPC
-        // `eth_getTransactionReceipt` sur chaque hash et reconstruira le block.
+        // Phase H.2 : toutes les 30s, drainer les patterns prets et valider
+        // chacun via `eth_getTransactionReceipt`.
         if last_drain.elapsed() >= Duration::from_secs(30) {
             let block = provider.get_block_number().await.unwrap_or(0);
             let ready = tracker.drain_ready_and_purge(block);
-            if !ready.is_empty() {
-                info!(
-                    n_ready = ready.len(),
-                    block, "🔍 Phase H.2 placeholder : N patterns prets a etre valides post-block"
-                );
+            for entry in ready {
+                let outcomes = validate_hashes(&provider, &entry.hashes).await;
+                for (hash, outcome) in &outcomes {
+                    *validated_counts
+                        .entry((entry.kind, outcome.label()))
+                        .or_insert(0) += 1;
+                    match outcome {
+                        ValidationOutcome::MinedSuccess { block_number } => info!(
+                            kind = ?entry.kind,
+                            hash = %hash,
+                            block = block_number,
+                            verdict = "MINED_SUCCESS",
+                            "🔍 VALIDATED"
+                        ),
+                        ValidationOutcome::MinedReverted { block_number } => info!(
+                            kind = ?entry.kind,
+                            hash = %hash,
+                            block = block_number,
+                            verdict = "MINED_REVERTED",
+                            note = "bot a paye le gas pour rien, probable race MEV perdue",
+                            "🔍 VALIDATED"
+                        ),
+                        ValidationOutcome::NotMined => info!(
+                            kind = ?entry.kind,
+                            hash = %hash,
+                            verdict = "NOT_MINED",
+                            note = "tx droppee du mempool",
+                            "🔍 VALIDATED"
+                        ),
+                    }
+                }
             }
             last_drain = Instant::now();
         }

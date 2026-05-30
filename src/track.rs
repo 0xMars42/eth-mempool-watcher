@@ -22,7 +22,7 @@ pub const BLOCKS_BEFORE_CHECK: u64 = 3;
 pub const BLOCKS_BEFORE_GIVE_UP: u64 = 60;
 
 /// Type de pattern qui a genere l'entree (utile pour la presentation).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TrackedKind {
     SniperCluster,
     BotRepetition,

@@ -10,3 +10,4 @@ pub mod decode;
 pub mod detect;
 pub mod routers;
 pub mod track;
+pub mod validate;
