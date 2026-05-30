@@ -19,24 +19,29 @@ Base has no public mempool (Coinbase sequencer is centralized). Ethereum L1
 does — and `wss://ethereum-rpc.publicnode.com` exposes
 `eth_subscribe newPendingTransactions` for free, no API key needed.
 
-## Phase A — what works now (smoke test)
+## Phase A — what works now (smoke test, full tx bodies)
 
 - Connects to a public WebSocket endpoint
-- Subscribes to `newPendingTransactions`
-- Logs throughput stats every 2 seconds
+- Subscribes to `newPendingTransactions` **with `fullTransactions=true`** (Geth/Reth
+  extension, supported by publicnode.com)
+- Logs throughput + body stats every 2 seconds — no extra RPC needed for the body
 
-Observed live: **5–30 pending tx/s** depending on network congestion.
+Observed live on `wss://ethereum-rpc.publicnode.com` (free, no API key):
 
 ```text
-INFO mempool tick total=242 window_count=15 tx_per_sec="5.4" last_tx=0x699d...37ed6
+INFO mempool tick total=69 window=11 tx_per_sec="4.5" pct_with_to="99%"
+     avg_input_bytes=594 sample_from=0x2212...7643 sample_hash=0x1dc7...0743
 ```
+
+→ ~5–15 full tx bodies per second, 98–99% have a `to` field (i.e. not contract
+deployments), median calldata ~600 bytes (the size of typical DEX swaps).
 
 ## Roadmap
 
 | Phase | Status | What |
 |---|---|---|
-| A | ✅ | WS connect + pending tx hash stream |
-| B | ⏳ | Fetch full tx body, filter by router (Uniswap V2/V3/Universal) |
+| A | ✅ | WS connect + **full** pending tx bodies stream |
+| B | ⏳ | Filter by router (Uniswap V2 / V3 / Universal Router) |
 | C | 📋 | Decode swap calldata (`alloy::sol!` on routers) |
 | D | 📋 | Quoter-based price impact simulation |
 | E | 📋 | Sandwich candidate detection (heuristic) |

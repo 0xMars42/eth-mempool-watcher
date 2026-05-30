@@ -1,13 +1,18 @@
-//! eth-mempool-watcher — Phase A (smoke test).
+//! eth-mempool-watcher — Phase A (smoke test, full bodies).
 //!
 //! Se connecte au mempool Ethereum L1 via WebSocket et s'abonne a
-//! `newPendingTransactions`. Logge un rapport toutes les 2s : nombre de tx
-//! recus, debit en tx/s, et le hash de la derniere tx vue.
+//! `newPendingTransactions` avec `fullTransactions=true` (extension Geth/Reth
+//! supportee par publicnode.com).
 //!
-//! Endpoint par defaut : `wss://ethereum-rpc.publicnode.com` (gratuit, peut
-//! ne pas supporter le subscribe pending). Override : `ETH_WS_URL` dans `.env`
-//! (ex: Alchemy / QuickNode pour avoir le full tx body en Phase B).
+//! Avantage par rapport au simple `subscribe_pending_transactions` (hashes
+//! seuls) : on a directement le body complet (`from`, `to`, `value`, `input`,
+//! `gas_price`...) — zero round-trip RPC supplementaire necessaire pour le
+//! decodage en Phase B.
+//!
+//! Endpoint par defaut : `wss://ethereum-rpc.publicnode.com` (confirme en live,
+//! sans cle API, ~10 tx/s). Override : `ETH_WS_URL` dans `.env`.
 
+use alloy::consensus::Transaction;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use eyre::Result;
 use futures_util::StreamExt;
@@ -32,27 +37,40 @@ async fn main() -> Result<()> {
         .await?;
     info!("WS connecte");
 
-    info!("Tentative subscribe `newPendingTransactions`...");
-    let sub = provider.subscribe_pending_transactions().await?;
+    info!("Subscribe `newPendingTransactions` (full bodies)...");
+    let sub = provider.subscribe_full_pending_transactions().await?;
     let mut stream = sub.into_stream();
     info!("Subscription active — Ctrl+C pour arreter");
 
     let mut count: u64 = 0;
     let mut total: u64 = 0;
+    let mut with_to: u64 = 0; // tx qui ont un `to` (= pas un contract deployment)
+    let mut total_input_bytes: u64 = 0; // taille moyenne du calldata
     let mut last_log = Instant::now();
 
-    while let Some(hash) = stream.next().await {
+    while let Some(tx) = stream.next().await {
         count += 1;
         total += 1;
+        let input = tx.inner.input();
+        total_input_bytes += input.len() as u64;
+        if tx.inner.to().is_some() {
+            with_to += 1;
+        }
 
         let elapsed = last_log.elapsed();
         if elapsed >= Duration::from_secs(2) {
             let rate = count as f64 / elapsed.as_secs_f64();
             info!(
                 total,
-                window_count = count,
+                window = count,
                 tx_per_sec = format!("{:.1}", rate),
-                last_tx = %format!("{hash:#x}"),
+                pct_with_to = format!(
+                    "{:.0}%",
+                    100.0 * with_to as f64 / total.max(1) as f64
+                ),
+                avg_input_bytes = total_input_bytes / total.max(1),
+                sample_from = %tx.inner.signer(),
+                sample_hash = %tx.inner.hash(),
                 "mempool tick"
             );
             count = 0;
