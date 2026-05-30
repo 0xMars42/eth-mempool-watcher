@@ -16,10 +16,25 @@ use alloy::primitives::{Address, B256, U256, address};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-/// WETH canonique Ethereum mainnet (utilise pour la regle large-swap).
+/// WETH canonique Ethereum mainnet.
 pub const WETH: Address = address!("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+/// USDC natif Circle.
+pub const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+/// USDT (Tether).
+pub const USDT: Address = address!("dAC17F958D2ee523a2206206994597C13D831ec7");
+/// DAI (MakerDAO).
+pub const DAI: Address = address!("6B175474E89094C44Da98b954EedeAC495271d0F");
 
-// --- Seuils v0 (tweakable via Detector::with_thresholds) ---
+/// Tokens "quote" du marche : utilises comme reference de prix, pas comme
+/// cible de sniping. Exclus du `token_out` de SniperCluster pour eviter les
+/// faux-positifs (tout vendeur de memecoin pour WETH/stables compterait sinon).
+pub const QUOTE_TOKENS: [Address; 4] = [WETH, USDC, USDT, DAI];
+
+fn is_quote_token(a: Address) -> bool {
+    QUOTE_TOKENS.contains(&a)
+}
+
+// --- Seuils v0 ---
 
 const CLUSTER_MIN_SWAPS: usize = 3;
 const CLUSTER_WINDOW: Duration = Duration::from_secs(30);
@@ -30,15 +45,24 @@ const REPETITION_WINDOW: Duration = Duration::from_secs(10);
 /// 0.5 ETH = 5 * 10^17 wei.
 const LARGE_SWAP_WETH_WEI: u128 = 500_000_000_000_000_000;
 
-/// Tout swap suffisamment decode pour alimenter la detection.
+/// Details d'un swap decode (token_in/out + amount). Absent pour les
+/// observations "from-only" issues d'envelopes (Universal Router, multicall)
+/// qui permettent BotRepetition mais ni SniperCluster ni LargeWethSwap.
+#[derive(Clone, Debug)]
+pub struct SwapDetails {
+    pub token_in: Address,
+    pub token_out: Address,
+    /// Quantite d'entree (wei pour WETH-in, raw token units sinon).
+    pub amount_in: U256,
+}
+
+/// Une observation a alimenter au [`Detector`].
 #[derive(Clone, Debug)]
 pub struct Observation {
     pub from: Address,
-    pub token_in: Address,
-    pub token_out: Address,
-    /// Quantite d'entree (en wei pour WETH, en raw token units sinon).
-    pub amount_in: U256,
     pub hash: B256,
+    /// `Some(...)` quand on a decode le swap, `None` pour UR/multicall envelope.
+    pub swap: Option<SwapDetails>,
 }
 
 /// Une detection emise par [`Detector::observe`].
@@ -109,12 +133,15 @@ impl Detector {
 
         let mut detections = Vec::new();
 
-        // 2. Large WETH swap : detection unique sur l'observation entrante.
-        if obs.token_in == WETH && obs.amount_in >= U256::from(LARGE_SWAP_WETH_WEI) {
+        // 2. Large WETH swap : seulement si on a les details du swap.
+        if let Some(s) = &obs.swap
+            && s.token_in == WETH
+            && s.amount_in >= U256::from(LARGE_SWAP_WETH_WEI)
+        {
             detections.push(Detection::LargeWethSwap {
                 from: obs.from,
-                token_out: obs.token_out,
-                amount_in_wei: obs.amount_in,
+                token_out: s.token_out,
+                amount_in_wei: s.amount_in,
                 hash: obs.hash,
             });
         }
@@ -122,22 +149,33 @@ impl Detector {
         // 3. On ajoute apres pour que la detection prenne en compte l'entrante.
         self.history.push_back((now, obs.clone()));
 
-        // 4. Sniper cluster : compter les obs vers obs.token_out dans CLUSTER_WINDOW.
-        let cluster_cutoff = now - CLUSTER_WINDOW;
-        let cluster: Vec<&(Instant, Observation)> = self
-            .history
-            .iter()
-            .filter(|(t, o)| *t >= cluster_cutoff && o.token_out == obs.token_out)
-            .collect();
-        if cluster.len() >= CLUSTER_MIN_SWAPS {
-            detections.push(Detection::SniperCluster {
-                token_out: obs.token_out,
-                n_swaps: cluster.len(),
-                sample_hashes: cluster.iter().rev().take(3).map(|(_, o)| o.hash).collect(),
-            });
+        // 4. Sniper cluster : seulement si le token_out n'est PAS un quote token
+        //    (= eviter les faux-positifs ou tout le monde vend pour WETH/USDC).
+        if let Some(s_in) = &obs.swap
+            && !is_quote_token(s_in.token_out)
+        {
+            let target_token_out = s_in.token_out;
+            let cluster_cutoff = now - CLUSTER_WINDOW;
+            let cluster: Vec<&(Instant, Observation)> = self
+                .history
+                .iter()
+                .filter(|(t, o)| {
+                    *t >= cluster_cutoff
+                        && o.swap
+                            .as_ref()
+                            .is_some_and(|s| s.token_out == target_token_out)
+                })
+                .collect();
+            if cluster.len() >= CLUSTER_MIN_SWAPS {
+                detections.push(Detection::SniperCluster {
+                    token_out: target_token_out,
+                    n_swaps: cluster.len(),
+                    sample_hashes: cluster.iter().rev().take(3).map(|(_, o)| o.hash).collect(),
+                });
+            }
         }
 
-        // 5. Bot repetition : compter par `from` dans REPETITION_WINDOW.
+        // 5. Bot repetition : ne depend que de `from`, marche meme sans swap details.
         let rep_cutoff = now - REPETITION_WINDOW;
         let mut per_from: HashMap<Address, Vec<&Observation>> = HashMap::new();
         for (t, o) in &self.history {
@@ -174,10 +212,21 @@ mod tests {
     fn obs(from: u8, token_in: Address, token_out: u8, amount: u128, h: u8) -> Observation {
         Observation {
             from: addr(from),
-            token_in,
-            token_out: addr(token_out),
-            amount_in: U256::from(amount),
             hash: hash(h),
+            swap: Some(SwapDetails {
+                token_in,
+                token_out: addr(token_out),
+                amount_in: U256::from(amount),
+            }),
+        }
+    }
+
+    /// Obs "from-only" (cas UR envelope) : pas de swap details.
+    fn obs_no_swap(from: u8, h: u8) -> Observation {
+        Observation {
+            from: addr(from),
+            hash: hash(h),
+            swap: None,
         }
     }
 
@@ -279,6 +328,102 @@ mod tests {
             !det.iter()
                 .any(|d| matches!(d, Detection::LargeWethSwap { .. })),
             "got {det:?}"
+        );
+    }
+
+    // --- Tests des fixes post-live-run --------------------------------------
+
+    fn obs_full(
+        from: u8,
+        token_in: Address,
+        token_out: Address,
+        amount: u128,
+        h: u8,
+    ) -> Observation {
+        Observation {
+            from: addr(from),
+            hash: hash(h),
+            swap: Some(SwapDetails {
+                token_in,
+                token_out,
+                amount_in: U256::from(amount),
+            }),
+        }
+    }
+
+    /// FIX FAUX-POSITIF : 3 swaps vers WETH ne doivent PAS declencher SniperCluster
+    /// (WETH est quote token : "3 personnes vendent pour WETH" = bruit, pas sniping).
+    #[test]
+    fn sniper_cluster_excludes_weth_as_token_out() {
+        let mut d = Detector::new();
+        let t = Instant::now();
+        let _ = d.observe_at(obs_full(1, addr(0xAB), WETH, 1, 1), t);
+        let _ = d.observe_at(
+            obs_full(2, addr(0xCD), WETH, 1, 2),
+            t + Duration::from_secs(5),
+        );
+        let det = d.observe_at(
+            obs_full(3, addr(0xEF), WETH, 1, 3),
+            t + Duration::from_secs(10),
+        );
+        assert!(
+            !det.iter()
+                .any(|d| matches!(d, Detection::SniperCluster { .. })),
+            "WETH comme token_out doit etre exclu, got {det:?}"
+        );
+    }
+
+    /// Idem USDC : exclu.
+    #[test]
+    fn sniper_cluster_excludes_usdc_as_token_out() {
+        let mut d = Detector::new();
+        let t = Instant::now();
+        let _ = d.observe_at(obs_full(1, addr(0xAB), USDC, 1, 1), t);
+        let _ = d.observe_at(
+            obs_full(2, addr(0xCD), USDC, 1, 2),
+            t + Duration::from_secs(5),
+        );
+        let det = d.observe_at(
+            obs_full(3, addr(0xEF), USDC, 1, 3),
+            t + Duration::from_secs(10),
+        );
+        assert!(
+            !det.iter()
+                .any(|d| matches!(d, Detection::SniperCluster { .. })),
+            "USDC comme token_out doit etre exclu, got {det:?}"
+        );
+    }
+
+    /// FIX BOT-REPETITION : 2 obs from-only (UR envelope) doivent declencher
+    /// BotRepetition meme sans swap details.
+    #[test]
+    fn bot_repetition_fires_on_envelope_only() {
+        let mut d = Detector::new();
+        let t = Instant::now();
+        let _ = d.observe_at(obs_no_swap(42, 1), t);
+        let det = d.observe_at(obs_no_swap(42, 2), t + Duration::from_secs(3));
+        let rep = det
+            .iter()
+            .find(|d| matches!(d, Detection::BotRepetition { .. }))
+            .expect("BotRepetition doit fire sur from-only");
+        if let Detection::BotRepetition { n_swaps, from, .. } = rep {
+            assert_eq!(*n_swaps, 2);
+            assert_eq!(*from, addr(42));
+        }
+    }
+
+    /// SniperCluster ne fire jamais sur des obs from-only (pas de token_out).
+    #[test]
+    fn sniper_cluster_skips_envelope_observations() {
+        let mut d = Detector::new();
+        let t = Instant::now();
+        let _ = d.observe_at(obs_no_swap(1, 1), t);
+        let _ = d.observe_at(obs_no_swap(2, 2), t + Duration::from_secs(1));
+        let det = d.observe_at(obs_no_swap(3, 3), t + Duration::from_secs(2));
+        assert!(
+            !det.iter()
+                .any(|d| matches!(d, Detection::SniperCluster { .. })),
+            "envelope obs ne devraient pas creer de cluster, got {det:?}"
         );
     }
 }

@@ -11,7 +11,7 @@ use alloy::consensus::Transaction;
 use alloy::primitives::{Address, U256};
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use eth_mempool_watcher::decode::{DecodedSwap, decode as decode_swap};
-use eth_mempool_watcher::detect::{Detection, Detector, Observation};
+use eth_mempool_watcher::detect::{Detection, Detector, Observation, SwapDetails};
 use eth_mempool_watcher::routers::{Router, lookup};
 use eyre::Result;
 use futures_util::StreamExt;
@@ -216,10 +216,12 @@ fn observation_from_decoded(
             ..
         } => Some(Observation {
             from,
-            token_in: *token_in,
-            token_out: *token_out,
-            amount_in: *amount_in,
             hash,
+            swap: Some(SwapDetails {
+                token_in: *token_in,
+                token_out: *token_out,
+                amount_in: *amount_in,
+            }),
         }),
         DecodedSwap::ExactInputPath {
             path, amount_in, ..
@@ -234,15 +236,24 @@ fn observation_from_decoded(
             };
             Some(Observation {
                 from,
-                token_in,
-                token_out,
-                amount_in: amount_in_effective,
                 hash,
+                swap: Some(SwapDetails {
+                    token_in,
+                    token_out,
+                    amount_in: amount_in_effective,
+                }),
             })
         }
-        DecodedSwap::UniversalRouterEnvelope { .. }
-        | DecodedSwap::Multicall { .. }
-        | DecodedSwap::Unknown { .. } => None,
+        // Envelopes : on alimente une obs "from-only" pour permettre
+        // BotRepetition. SniperCluster / LargeWethSwap sont skip cote detector.
+        DecodedSwap::UniversalRouterEnvelope { .. } | DecodedSwap::Multicall { .. } => {
+            Some(Observation {
+                from,
+                hash,
+                swap: None,
+            })
+        }
+        DecodedSwap::Unknown { .. } => None,
     }
 }
 
