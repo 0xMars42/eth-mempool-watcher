@@ -44,7 +44,13 @@ pub enum DecodedSwap {
         n_inputs: usize,
         deadline: Option<U256>,
     },
-    /// Selector connu mais pas decode encore (multicall, addLiquidity, etc.)
+    /// Uniswap V3 multicall : enveloppe pour N inner calls. On compte juste
+    /// le nombre d'inner calls en v0 ; decoder chacune sera Phase C.2.
+    Multicall {
+        protocol: &'static str,
+        n_inner_calls: usize,
+    },
+    /// Selector connu mais pas decode encore (addLiquidity, etc.)
     Unknown { selector: [u8; 4] },
 }
 
@@ -71,6 +77,10 @@ impl DecodedSwap {
                 n_inputs,
                 ..
             } => format!("UniversalRouter execute ({n_commands} cmds, {n_inputs} inputs)"),
+            DecodedSwap::Multicall {
+                protocol,
+                n_inner_calls,
+            } => format!("{protocol} multicall ({n_inner_calls} inner calls)"),
             DecodedSwap::Unknown { selector } => format!(
                 "Unknown 0x{:02x}{:02x}{:02x}{:02x}",
                 selector[0], selector[1], selector[2], selector[3]

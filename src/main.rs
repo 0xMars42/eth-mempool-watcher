@@ -127,6 +127,16 @@ async fn main() -> Result<()> {
                 hash = %tx.inner.hash(),
                 "UR envelope"
             ),
+            DecodedSwap::Multicall { n_inner_calls, .. } => info!(
+                router = router.name(),
+                label = decoded.short_label(),
+                n_inner_calls,
+                from = %tx.inner.signer(),
+                max_fee_gwei = format!("{max_fee_gwei:.2}"),
+                input_bytes = input.len(),
+                hash = %tx.inner.hash(),
+                "multicall envelope"
+            ),
             DecodedSwap::Unknown { .. } => info!(
                 router = router.name(),
                 label = decoded.short_label(),
@@ -230,7 +240,9 @@ fn observation_from_decoded(
                 hash,
             })
         }
-        DecodedSwap::UniversalRouterEnvelope { .. } | DecodedSwap::Unknown { .. } => None,
+        DecodedSwap::UniversalRouterEnvelope { .. }
+        | DecodedSwap::Multicall { .. }
+        | DecodedSwap::Unknown { .. } => None,
     }
 }
 
