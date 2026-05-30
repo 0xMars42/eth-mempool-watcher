@@ -9,6 +9,7 @@
 
 use alloy::consensus::Transaction;
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use eth_mempool_watcher::decode::{DecodedSwap, decode as decode_swap};
 use eth_mempool_watcher::routers::{Router, lookup};
 use eyre::Result;
 use futures_util::StreamExt;
@@ -54,30 +55,84 @@ async fn main() -> Result<()> {
         router_hits += 1;
         *per_router.entry(router).or_insert(0) += 1;
 
-        // Selector = 4 premiers bytes du calldata (signature de fonction).
         let input = tx.inner.input();
-        let selector = if input.len() >= 4 {
-            format!(
-                "0x{:02x}{:02x}{:02x}{:02x}",
-                input[0], input[1], input[2], input[3]
-            )
-        } else {
-            "—".to_string()
-        };
-
-        // EIP-1559 tx: gas_price() retourne None, mais max_fee_per_gas couvre
-        // les deux cas (legacy l'expose comme egal a gas_price).
+        let decoded = decode_swap(router, input);
         let max_fee_gwei = tx.inner.max_fee_per_gas() as f64 / 1e9;
-        info!(
-            router = router.name(),
-            selector,
-            from = %tx.inner.signer(),
-            value_wei = %tx.inner.value(),
-            max_fee_gwei = format!("{max_fee_gwei:.2}"),
-            input_bytes = input.len(),
-            hash = %tx.inner.hash(),
-            "DEX router hit"
-        );
+
+        // Log enrichi : on log les champs riches quand decode reussit, sinon
+        // on garde au moins le selector + meta.
+        match &decoded {
+            DecodedSwap::ExactInput {
+                token_in,
+                token_out,
+                amount_in,
+                amount_out_min,
+                fee_pips,
+                ..
+            } => info!(
+                router = router.name(),
+                label = decoded.short_label(),
+                token_in = %token_in,
+                token_out = %token_out,
+                amount_in = %amount_in,
+                amount_out_min = %amount_out_min,
+                fee_pips = ?fee_pips,
+                from = %tx.inner.signer(),
+                max_fee_gwei = format!("{max_fee_gwei:.2}"),
+                hash = %tx.inner.hash(),
+                "DEX swap decoded"
+            ),
+            DecodedSwap::ExactInputPath {
+                path,
+                amount_in,
+                amount_out_min,
+                ..
+            } => {
+                let amount_in_effective = if *amount_in == alloy::primitives::U256::ZERO {
+                    // V2 swapExactETHForTokens : amountIn = tx.value
+                    tx.inner.value()
+                } else {
+                    *amount_in
+                };
+                info!(
+                    router = router.name(),
+                    label = decoded.short_label(),
+                    path_len = path.len(),
+                    token_in = %path.first().copied().unwrap_or_default(),
+                    token_out = %path.last().copied().unwrap_or_default(),
+                    amount_in = %amount_in_effective,
+                    amount_out_min = %amount_out_min,
+                    from = %tx.inner.signer(),
+                    max_fee_gwei = format!("{max_fee_gwei:.2}"),
+                    hash = %tx.inner.hash(),
+                    "DEX swap decoded"
+                );
+            }
+            DecodedSwap::UniversalRouterEnvelope {
+                n_commands,
+                n_inputs,
+                ..
+            } => info!(
+                router = router.name(),
+                label = decoded.short_label(),
+                n_commands,
+                n_inputs,
+                from = %tx.inner.signer(),
+                max_fee_gwei = format!("{max_fee_gwei:.2}"),
+                input_bytes = input.len(),
+                hash = %tx.inner.hash(),
+                "UR envelope"
+            ),
+            DecodedSwap::Unknown { .. } => info!(
+                router = router.name(),
+                label = decoded.short_label(),
+                from = %tx.inner.signer(),
+                max_fee_gwei = format!("{max_fee_gwei:.2}"),
+                input_bytes = input.len(),
+                hash = %tx.inner.hash(),
+                "unknown selector on whitelisted router"
+            ),
+        }
 
         // Stats periodiques.
         if last_log.elapsed() >= Duration::from_secs(2) {

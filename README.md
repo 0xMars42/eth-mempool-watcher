@@ -53,7 +53,8 @@ What this tells us :
 |---|---|---|
 | A | ✅ | WS connect + **full** pending tx bodies stream |
 | B | ✅ | Filter by DEX router whitelist (Uni V2/V3/Universal, 1inch v6) |
-| C | ⏳ | Decode swap calldata (`alloy::sol!` on routers) — labels & params |
+| C | ✅ | Decode swap calldata — Uni V2 (3 selectors) + Uni V3 (exactInputSingle) + UR envelope |
+| C.1 | 📋 | Decode Uni V2 fee-on-transfer variants + Uni V3 multicall + UR per-command |
 | D | 📋 | Quoter-based price impact simulation |
 | E | 📋 | Sandwich candidate detection (heuristic) |
 | F | 📋 | Stats + dashboard |
