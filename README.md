@@ -19,30 +19,41 @@ Base has no public mempool (Coinbase sequencer is centralized). Ethereum L1
 does — and `wss://ethereum-rpc.publicnode.com` exposes
 `eth_subscribe newPendingTransactions` for free, no API key needed.
 
-## Phase A — what works now (smoke test, full tx bodies)
+## Phase A + B — what works now
 
 - Connects to a public WebSocket endpoint
 - Subscribes to `newPendingTransactions` **with `fullTransactions=true`** (Geth/Reth
-  extension, supported by publicnode.com)
-- Logs throughput + body stats every 2 seconds — no extra RPC needed for the body
+  extension, supported by `publicnode.com` for free, no API key)
+- For each pending tx, filters on a whitelist of DEX routers (Uniswap V2,
+  Uniswap V3, Universal Router, 1inch v6)
+- Logs each router hit with selector, signer, max-fee, and calldata size
 
-Observed live on `wss://ethereum-rpc.publicnode.com` (free, no API key):
+Real 60-second sample (Ethereum mainnet, 2026-05-30 morning):
 
 ```text
-INFO mempool tick total=69 window=11 tx_per_sec="4.5" pct_with_to="99%"
-     avg_input_bytes=594 sample_from=0x2212...7643 sample_hash=0x1dc7...0743
+INFO DEX router hit  router="Uniswap Universal Router"  selector="0x3593564c"
+     from=0x8ca0...eaB44  value_wei=0  max_fee_gwei="0.48"  input_bytes=1252
+     hash=0x5700f2b5...
+
+INFO stats  total=437  router_hits=10  hit_rate_pct="2.3"
+     per_router="Uniswap V2 Router02=2, Uniswap Universal Router=8"
 ```
 
-→ ~5–15 full tx bodies per second, 98–99% have a `to` field (i.e. not contract
-deployments), median calldata ~600 bytes (the size of typical DEX swaps).
+What this tells us :
+- **~7 full tx/s** in the public mempool, ~2% touch a DEX router
+- **80%+ of DEX volume** flows through Universal Router (`0x3593564c` is its
+  `execute(bytes, bytes[], uint256)` selector — the multi-step command encoding)
+- Network was calm (max-fees of 0.28–0.49 gwei)
+- Repeated identical-calldata tx from a few addresses = **sniper bots in the wild**,
+  groundwork for the Phase E sandwich detector
 
 ## Roadmap
 
 | Phase | Status | What |
 |---|---|---|
 | A | ✅ | WS connect + **full** pending tx bodies stream |
-| B | ⏳ | Filter by router (Uniswap V2 / V3 / Universal Router) |
-| C | 📋 | Decode swap calldata (`alloy::sol!` on routers) |
+| B | ✅ | Filter by DEX router whitelist (Uni V2/V3/Universal, 1inch v6) |
+| C | ⏳ | Decode swap calldata (`alloy::sol!` on routers) — labels & params |
 | D | 📋 | Quoter-based price impact simulation |
 | E | 📋 | Sandwich candidate detection (heuristic) |
 | F | 📋 | Stats + dashboard |
