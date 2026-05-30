@@ -13,6 +13,7 @@ use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use eth_mempool_watcher::decode::{DecodedSwap, decode as decode_swap};
 use eth_mempool_watcher::detect::{Detection, Detector, Observation, SwapDetails};
 use eth_mempool_watcher::routers::{Router, lookup};
+use eth_mempool_watcher::track::{PendingTracker, TrackedKind};
 use eyre::Result;
 use futures_util::StreamExt;
 use std::collections::HashMap;
@@ -48,6 +49,9 @@ async fn main() -> Result<()> {
     let mut last_log = Instant::now();
     let mut detector = Detector::new();
     let mut detections_counts: HashMap<&'static str, u64> = HashMap::new();
+    // Phase H.1 : tracker des patterns en attente de validation post-block.
+    let mut tracker = PendingTracker::new();
+    let mut last_drain = Instant::now();
 
     while let Some(tx) = stream.next().await {
         total += 1;
@@ -163,6 +167,21 @@ async fn main() -> Result<()> {
                     Detection::LargeWethSwap { .. } => "large_weth_swap",
                 };
                 *detections_counts.entry(key).or_insert(0) += 1;
+
+                // Phase H.1 : enregistrer pour validation post-block.
+                let kind = match &det {
+                    Detection::SniperCluster { .. } => TrackedKind::SniperCluster,
+                    Detection::BotRepetition { .. } => TrackedKind::BotRepetition,
+                    Detection::LargeWethSwap { .. } => TrackedKind::LargeWethSwap,
+                };
+                let hashes = match &det {
+                    Detection::SniperCluster { sample_hashes, .. } => sample_hashes.clone(),
+                    Detection::BotRepetition { sample_hashes, .. } => sample_hashes.clone(),
+                    Detection::LargeWethSwap { hash, .. } => vec![*hash],
+                };
+                // 1 RPC call par detection (rare) — coût négligeable.
+                let current_block = provider.get_block_number().await.unwrap_or(0);
+                tracker.track(kind, hashes, current_block);
             }
         }
 
@@ -179,6 +198,7 @@ async fn main() -> Result<()> {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let tstats = tracker.stats();
             info!(
                 total,
                 router_hits,
@@ -189,9 +209,28 @@ async fn main() -> Result<()> {
                 } else {
                     detections_summary
                 },
+                tracker_pending = tstats.pending,
+                tracker_tracked = tstats.total_tracked,
+                tracker_ready = tstats.total_ready,
+                tracker_expired = tstats.total_expired,
                 "stats"
             );
             last_log = Instant::now();
+        }
+
+        // Phase H.1 : drainer les patterns prets toutes les 30s. En H.1 on
+        // les jette juste avec un log placeholder — H.2 fera l'appel RPC
+        // `eth_getTransactionReceipt` sur chaque hash et reconstruira le block.
+        if last_drain.elapsed() >= Duration::from_secs(30) {
+            let block = provider.get_block_number().await.unwrap_or(0);
+            let ready = tracker.drain_ready_and_purge(block);
+            if !ready.is_empty() {
+                info!(
+                    n_ready = ready.len(),
+                    block, "🔍 Phase H.2 placeholder : N patterns prets a etre valides post-block"
+                );
+            }
+            last_drain = Instant::now();
         }
     }
 
