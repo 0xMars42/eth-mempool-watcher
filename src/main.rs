@@ -233,14 +233,14 @@ async fn main() -> Result<()> {
                         .entry((entry.kind, outcome.label()))
                         .or_insert(0) += 1;
                     match outcome {
-                        ValidationOutcome::MinedSuccess { block_number } => info!(
+                        ValidationOutcome::MinedSuccess { block_number, .. } => info!(
                             kind = ?entry.kind,
                             hash = %hash,
                             block = block_number,
                             verdict = "MINED_SUCCESS",
                             "VALIDATED"
                         ),
-                        ValidationOutcome::MinedReverted { block_number } => info!(
+                        ValidationOutcome::MinedReverted { block_number, .. } => info!(
                             kind = ?entry.kind,
                             hash = %hash,
                             block = block_number,

@@ -25,11 +25,11 @@ pub enum ValidationOutcome {
     /// `get_transaction_receipt` a retourne `None` — tx jamais incluse.
     NotMined,
     /// Tx incluse, `status` du receipt vaut `true`.
-    MinedSuccess { block_number: u64 },
+    MinedSuccess { block_number: u64, tx_index: u64 },
     /// Tx incluse mais `status` vaut `false` (execution_reverted).
     /// Sur Uni V3 c'est typiquement le slippage "Too much requested" =
     /// le bot a perdu sa race MEV.
-    MinedReverted { block_number: u64 },
+    MinedReverted { block_number: u64, tx_index: u64 },
 }
 
 impl ValidationOutcome {
@@ -40,10 +40,17 @@ impl ValidationOutcome {
             None => ValidationOutcome::NotMined,
             Some(r) => {
                 let block_number = r.block_number.unwrap_or(0);
+                let tx_index = r.transaction_index.unwrap_or(0);
                 if r.status() {
-                    ValidationOutcome::MinedSuccess { block_number }
+                    ValidationOutcome::MinedSuccess {
+                        block_number,
+                        tx_index,
+                    }
                 } else {
-                    ValidationOutcome::MinedReverted { block_number }
+                    ValidationOutcome::MinedReverted {
+                        block_number,
+                        tx_index,
+                    }
                 }
             }
         }
@@ -54,6 +61,24 @@ impl ValidationOutcome {
             ValidationOutcome::NotMined => "NotMined",
             ValidationOutcome::MinedSuccess { .. } => "MinedSuccess",
             ValidationOutcome::MinedReverted { .. } => "MinedReverted",
+        }
+    }
+
+    /// Numéro de bloc (None pour NotMined).
+    pub fn block_number(&self) -> Option<u64> {
+        match self {
+            ValidationOutcome::NotMined => None,
+            ValidationOutcome::MinedSuccess { block_number, .. }
+            | ValidationOutcome::MinedReverted { block_number, .. } => Some(*block_number),
+        }
+    }
+
+    /// Position dans le bloc (None pour NotMined).
+    pub fn tx_index(&self) -> Option<u64> {
+        match self {
+            ValidationOutcome::NotMined => None,
+            ValidationOutcome::MinedSuccess { tx_index, .. }
+            | ValidationOutcome::MinedReverted { tx_index, .. } => Some(*tx_index),
         }
     }
 }
@@ -93,11 +118,19 @@ mod tests {
     fn outcome_label_is_stable() {
         assert_eq!(ValidationOutcome::NotMined.label(), "NotMined");
         assert_eq!(
-            ValidationOutcome::MinedSuccess { block_number: 1 }.label(),
+            ValidationOutcome::MinedSuccess {
+                block_number: 1,
+                tx_index: 0
+            }
+            .label(),
             "MinedSuccess"
         );
         assert_eq!(
-            ValidationOutcome::MinedReverted { block_number: 1 }.label(),
+            ValidationOutcome::MinedReverted {
+                block_number: 1,
+                tx_index: 0
+            }
+            .label(),
             "MinedReverted"
         );
     }

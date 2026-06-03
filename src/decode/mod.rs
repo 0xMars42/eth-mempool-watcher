@@ -99,9 +99,11 @@ pub fn decode(router: crate::routers::Router, input: &[u8]) -> DecodedSwap {
     }
     let selector: [u8; 4] = [input[0], input[1], input[2], input[3]];
     match router {
-        R::UniswapV2Router02 => uniswap_v2::decode(selector, input),
+        R::UniswapV2Router02 | R::SushiSwapRouter => uniswap_v2::decode(selector, input),
         R::UniswapV3SwapRouter | R::UniswapV3SwapRouter02 => uniswap_v3::decode(selector, input),
         R::UniswapUniversalRouter => universal_router::decode(selector, input),
-        R::OneInchV6 => DecodedSwap::Unknown { selector },
+        // Balancer Vault et 1inch : interface complexe/propriétaire.
+        // On détecte la présence de la tx (utile pour les sandwiches) sans décoder le token.
+        R::BalancerVault | R::OneInchV5 | R::OneInchV6 => DecodedSwap::Unknown { selector },
     }
 }

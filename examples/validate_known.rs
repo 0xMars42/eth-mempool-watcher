@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
         *counts.entry(outcome.label()).or_insert(0) += 1;
 
         let verdict = match &outcome {
-            ValidationOutcome::MinedSuccess { block_number } => {
+            ValidationOutcome::MinedSuccess { block_number, .. } => {
                 format!("MINED_SUCCESS (block {block_number})")
             }
-            ValidationOutcome::MinedReverted { block_number } => {
+            ValidationOutcome::MinedReverted { block_number, .. } => {
                 format!("MINED_REVERTED (block {block_number}) <- bot a perdu, gas brule")
             }
             ValidationOutcome::NotMined => "NOT_MINED (droppee)".to_string(),
